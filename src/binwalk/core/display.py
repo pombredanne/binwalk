@@ -1,3 +1,6 @@
+# Code to handle displaying and logging of results.
+# Anything in binwalk that prints results to screen should use this class.
+
 import sys
 import csv as pycsv
 import datetime
@@ -10,12 +13,11 @@ class Display(object):
     This class is instantiated for all modules implicitly and should not need to be invoked directly by most modules.
     '''
     SCREEN_WIDTH = 0
-    HEADER_WIDTH = 150
+    HEADER_WIDTH = 80
     DEFAULT_FORMAT = "%s\n"
 
-    def __init__(self, quiet=False, verbose=False, log=None, csv=False, fit_to_screen=False, filter=None):
+    def __init__(self, quiet=False, verbose=False, log=None, csv=False, fit_to_screen=False):
         self.quiet = quiet
-        self.filter = filter
         self.verbose = verbose
         self.fit_to_screen = fit_to_screen
         self.fp = None
@@ -27,14 +29,14 @@ class Display(object):
         self._configure_formatting()
 
         if log:
-            self.fp = open(log, "w")
+            self.fp = open(log, "a")
             if csv:
                 self.csv = pycsv.writer(self.fp)
 
     def format_strings(self, header, result):
         self.result_format = result
         self.header_format = header
-        
+
         if self.num_columns == 0:
             self.num_columns = len(header.split())
 
@@ -44,6 +46,8 @@ class Display(object):
                 self.csv.writerow(columns)
             else:
                 self.fp.write(fmt % tuple(columns))
+
+            self.fp.flush()
 
     def add_custom_header(self, fmt, args):
         self.custom_verbose_format = fmt
@@ -83,7 +87,7 @@ class Display(object):
         # four spaces in the description string, which would break auto-formatting.
         for i in range(len(args)):
             if isinstance(args[i], str):
-                while "  " in args[i]:
+                while "    " in args[i]:
                     args[i] = args[i].replace("  " , " ")
 
         self._fprint(self.result_format, tuple(args))
@@ -93,13 +97,16 @@ class Display(object):
 
     def _fprint(self, fmt, columns, csv=True, stdout=True, filter=True):
         line = fmt % tuple(columns)
-        
-        if not filter or self.filter.valid_result(line):
-            if not self.quiet and stdout:
-                sys.stdout.write(self._format_line(line.strip()) + "\n")
 
-            if self.fp and not (self.csv and not csv):
-                self.log(fmt, columns)
+        if not self.quiet and stdout:
+            try:
+                sys.stdout.write(self._format_line(line.strip()) + "\n")
+                sys.stdout.flush()
+            except IOError as e:
+                pass
+
+        if self.fp and not (self.csv and not csv):
+            self.log(fmt, columns)
 
     def _append_to_data_parts(self, data, start, end):
         '''
@@ -123,7 +130,7 @@ class Display(object):
                 raise e
             except Exception:
                 pass
-        
+
         return start
 
     def _format_line(self, line):
@@ -131,29 +138,45 @@ class Display(object):
         Formats a line of text to fit in the terminal window.
         For Tim.
         '''
-        offset = 0
-        space_offset = 0
-        self.string_parts = []
         delim = '\n'
+        offset = 0
+        self.string_parts = []
 
-        if self.fit_to_screen and len(line) > self.SCREEN_WIDTH:
-            line_columns = line.split(None, self.num_columns-1)
+        # Split the line into an array of columns, e.g., ['0', '0x00000000', 'Some description here']
+        line_columns = line.split(None, self.num_columns-1)
+        if line_columns:
+            # Find where the start of the last column (description) starts in the line of text.
+            # All line wraps need to be aligned to this offset.
+            offset = line.rfind(line_columns[-1])
+            # The delimiter will be a newline followed by spaces padding out the line wrap to the alignment offset.
+            delim += ' ' * offset
 
-            if line_columns:
-                delim = '\n' + ' ' * line.rfind(line_columns[-1])
+        if line_columns and self.fit_to_screen and len(line) > self.SCREEN_WIDTH:
+            # Calculate the maximum length that each wrapped line can be
+            max_line_wrap_length = self.SCREEN_WIDTH - offset
+            # Append all but the last column to formatted_line
+            formatted_line = line[:offset]
 
-                while len(line[offset:]) > self.SCREEN_WIDTH:
-                    space_offset = line[offset:offset+self.HEADER_WIDTH].rfind(' ')
-                    if space_offset == -1 or space_offset == 0:
-                        space_offset = self.SCREEN_WIDTH
+            # Loop to split up line into multiple max_line_wrap_length pieces
+            while len(line[offset:]) > max_line_wrap_length:
+                # Find the nearest space to wrap the line at (so we don't split a word across two lines)
+                split_offset = line[offset:offset+max_line_wrap_length].rfind(' ')
+                # If there were no good places to split the line, just truncate it at max_line_wrap_length
+                if split_offset < 1:
+                    split_offset = max_line_wrap_length
 
-                    self._append_to_data_parts(line, offset, offset+space_offset)
+                self._append_to_data_parts(line, offset, offset+split_offset)
+                offset += split_offset
 
-                    offset += space_offset
+            # Add any remaining data (guarunteed to be max_line_wrap_length long or shorter) to self.string_parts
+            self._append_to_data_parts(line, offset, offset+len(line[offset:]))
 
-        self._append_to_data_parts(line, offset, offset+len(line[offset:]))
+            # Append self.string_parts to formatted_line; each part seperated by delim
+            formatted_line += delim.join(self.string_parts)
+        else:
+            formatted_line = line
 
-        return delim.join(self.string_parts)
+        return formatted_line
 
     def _configure_formatting(self):
         '''

@@ -11,23 +11,24 @@ class LZMAModPlugin(binwalk.core.plugin.Plugin):
     '''
     MODULES = ['Signature']
 
-    FAKE_LZMA_SIZE = "\x00\x00\x00\x10\x00\x00\x00\x00"
+    FAKE_LZMA_SIZE = "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
     SIGNATURE = "lzma compressed data"
 
     def init(self):
         self.original_cmd = ''
 
-        # Replace the existing LZMA extraction command with our own
-        rules = self.module.extractor.get_rules()
-        for i in range(0, len(rules)):
-            if rules[i]['regex'].match(self.SIGNATURE) and rules[i]['cmd']:
-                self.original_cmd = rules[i]['cmd']
-                rules[i]['cmd'] = self.lzma_cable_extractor
-                break
+        # Replace the first existing LZMA extraction command with our own
+        for rule in self.module.extractor.match(self.SIGNATURE):
+            self.original_cmd = rule['cmd']
+            rule['cmd'] = self.lzma_cable_extractor
+            break
 
     def lzma_cable_extractor(self, fname):
         # Try extracting the LZMA file without modification first
-        if not self.module.extractor.execute(self.original_cmd, fname):
+        result = self.module.extractor.execute(self.original_cmd, fname)
+
+        # If the external extractor was successul (True) or didn't exist (None), don't do anything.
+        if result not in [True, None]:
             out_name = os.path.splitext(fname)[0] + '-patched' + os.path.splitext(fname)[1]
             fp_out = BlockFile(out_name, 'w')
             # Use self.module.config.open_file here to ensure that other config settings (such as byte-swapping) are honored
@@ -37,14 +38,14 @@ class LZMAModPlugin(binwalk.core.plugin.Plugin):
 
             while i < fp_in.length:
                 (data, dlen) = fp_in.read_block()
-                
+
                 if i == 0:
                     out_data = data[0:5] + self.FAKE_LZMA_SIZE + data[5:]
                 else:
                     out_data = data
-                
+
                 fp_out.write(out_data)
-    
+
                 i += dlen
 
             fp_in.close()
@@ -52,7 +53,9 @@ class LZMAModPlugin(binwalk.core.plugin.Plugin):
 
             # Overwrite the original file so that it can be cleaned up if -r was specified
             shutil.move(out_name, fname)
-            self.module.extractor.execute(self.original_cmd, fname)
+            result = self.module.extractor.execute(self.original_cmd, fname)
+
+        return result
 
     def scan(self, result):
         # The modified cable modem LZMA headers all have valid dictionary sizes and a properties byte of 0x5D.

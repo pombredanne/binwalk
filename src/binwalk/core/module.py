@@ -1,3 +1,8 @@
+# Core code relating to binwalk modules and supporting classes.
+# In particular, the Module class (base class for all binwalk modules)
+# and the Modules class (main class for managing and executing binwalk modules)
+# are most critical.
+
 import io
 import os
 import sys
@@ -14,7 +19,7 @@ class Option(object):
     A container class that allows modules to declare command line options.
     '''
 
-    def __init__(self, kwargs={}, priority=0, description="", short="", long="", type=None, dtype=None):
+    def __init__(self, kwargs={}, priority=0, description="", short="", long="", type=None, dtype=None, hidden=False):
         '''
         Class constructor.
 
@@ -25,6 +30,7 @@ class Option(object):
         @long        - The long option to use (if None, this option will not be displayed in help output).
         @type        - The accepted data type (one of: io.FileIO/argparse.FileType/binwalk.core.common.BlockFile, list, str, int, float).
         @dtype       - The displayed accepted type string, to be shown in help output.
+        @hidden      - If set to True, this option will not be displayed in the help output.
 
         Returns None.
         '''
@@ -35,6 +41,7 @@ class Option(object):
         self.long = long
         self.type = type
         self.dtype = dtype
+        self.hidden = hidden
 
         if not self.dtype and self.type:
             if self.type in [io.FileIO, argparse.FileType, binwalk.core.common.BlockFile]:
@@ -42,26 +49,41 @@ class Option(object):
             elif self.type in [int, float, str]:
                 self.dtype = self.type.__name__
             else:
+                self.type = str
                 self.dtype = str.__name__
 
+    def convert(self, value, default_value):
+        if self.type and (self.type.__name__ == self.dtype):
+            # Be sure to specify a base of 0 for int() so that the base is auto-detected
+            if self.type == int:
+                t = self.type(value, 0)
+            else:
+                t = self.type(value)
+        elif default_value or default_value is False:
+            t = default_value
+        else:
+            t = value
+
+        return t
+
 class Kwarg(object):
-        '''
-        A container class allowing modules to specify their expected __init__ kwarg(s).
-        '''
+    '''
+    A container class allowing modules to specify their expected __init__ kwarg(s).
+    '''
 
-        def __init__(self, name="", default=None, description=""):
-            '''
-            Class constructor.
-    
-            @name        - Kwarg name.
-            @default     - Default kwarg value.
-            @description - Description string.
+    def __init__(self, name="", default=None, description=""):
+        '''
+        Class constructor.
 
-            Return None.
-            '''
-            self.name = name
-            self.default = default
-            self.description = description
+        @name        - Kwarg name.
+        @default     - Default kwarg value.
+        @description - Description string.
+
+        Return None.
+        '''
+        self.name = name
+        self.default = default
+        self.description = description
 
 class Dependency(object):
     '''
@@ -115,7 +137,7 @@ class Error(Result):
     '''
     A subclass of binwalk.core.module.Result.
     '''
-    
+
     def __init__(self, **kwargs):
         '''
         Accepts all the same kwargs as binwalk.core.module.Result, but the following are also added:
@@ -148,7 +170,7 @@ class Module(object):
             Dependency(name='Extractor',
                        attribute='extractor'),
     ]
-    
+
     # A list of binwalk.core.module.Dependency instances that can be filled in as needed by each individual module.
     DEPENDS = []
 
@@ -156,7 +178,7 @@ class Module(object):
     # Must be set prior to calling self.header.
     HEADER_FORMAT = "%-12s  %-12s    %s\n"
 
-    # Format string for printing each result during a scan. 
+    # Format string for printing each result during a scan.
     # Must be set prior to calling self.result.
     RESULT_FORMAT = "%-12d  0x%-12X  %s\n"
 
@@ -201,15 +223,16 @@ class Module(object):
         self.target_file_list = []
         self.status = None
         self.enabled = False
+        self.previous_next_file_fp = None
         self.current_target_file_name = None
         self.name = self.__class__.__name__
         self.plugins = binwalk.core.plugin.Plugins(self)
         self.dependencies = self.DEFAULT_DEPENDS + self.DEPENDS
 
         process_kwargs(self, kwargs)
-        
+
         self.plugins.load_plugins()
-        
+
         try:
             self.load()
         except KeyboardInterrupt as e:
@@ -221,9 +244,6 @@ class Module(object):
             self.target_file_list = list(self.config.target_files)
         except AttributeError as e:
             pass
-
-    def __del__(self):
-        return None
 
     def __enter__(self):
         return self
@@ -287,6 +307,9 @@ class Module(object):
     def _plugins_pre_scan(self):
         self.plugins.pre_scan_callbacks(self)
 
+    def _plugins_new_file(self, fp):
+        self.plugins.new_file_callbacks(fp)
+
     def _plugins_post_scan(self):
         self.plugins.post_scan_callbacks(self)
 
@@ -301,13 +324,19 @@ class Module(object):
                 result = [self.RESULT]
             else:
                 result = self.RESULT
-    
+
             for name in result:
-                args.append(getattr(r, name))
-        
+                value = getattr(r, name)
+
+                # Displayed offsets should be offset by the base address
+                if name == 'offset':
+                    value += self.config.base
+
+                args.append(value)
+
         return args
 
-    def next_file(self):
+    def next_file(self, close_previous=True):
         '''
         Gets the next file to be scanned (including pending extracted files, if applicable).
         Also re/initializes self.status.
@@ -315,19 +344,54 @@ class Module(object):
         '''
         fp = None
 
+        # Ensure files are close to prevent IOError (too many open files)
+        if close_previous:
+            try:
+                self.previous_next_file_fp.close()
+            except KeyboardInterrupt as e:
+                raise e
+            except Exception:
+                pass
+
         # Add any pending extracted files to the target_files list and reset the extractor's pending file list
-        self.target_file_list += [self.config.open_file(f) for f in self.extractor.pending]
-        self.extractor.pending = []
-        
-        if self.target_file_list:
-            fp = self.target_file_list.pop(0)
-            self.status.clear()
-            self.status.total = fp.length
+        self.target_file_list += self.extractor.pending
+
+        # Reset all dependencies prior to continuing with another file.
+        # This is particularly important for the extractor module, which must be reset
+        # in order to reset it's base output directory path for each file, and the
+        # list of pending files.
+        self.reset_dependencies()
+
+        while self.target_file_list:
+            next_target_file = self.target_file_list.pop(0)
+
+            # Values in self.target_file_list are either already open files (BlockFile instances), or paths
+            # to files that need to be opened for scanning.
+            if isinstance(next_target_file, str):
+                fp = self.config.open_file(next_target_file)
+            else:
+                fp = next_target_file
+
+            if not fp:
+                break
+            else:
+                if self.config.file_name_filter(fp) == False:
+                    fp.close()
+                    fp = None
+                    continue
+                else:
+                    self.status.clear()
+                    self.status.total = fp.length
+                    break
 
         if fp is not None:
-            self.current_target_file_name = fp.name    
+            self.current_target_file_name = fp.path
         else:
             self.current_target_file_name = None
+
+        self.previous_next_file_fp = fp
+
+        self._plugins_new_file(fp)
 
         return fp
 
@@ -352,6 +416,7 @@ class Module(object):
         if r is None:
             r = Result(**kwargs)
 
+        # Add the name of the current module to the result
         r.module = self.__class__.__name__
 
         # Any module that is reporting results, valid or not, should be marked as enabled
@@ -397,7 +462,7 @@ class Module(object):
         e.module = self.__class__.__name__
 
         self.errors.append(e)
-        
+
         if e.exception:
             sys.stderr.write("\n" + e.module + " Exception: " + str(e.exception) + "\n")
             sys.stderr.write("-" * exception_header_width + "\n")
@@ -419,7 +484,7 @@ class Module(object):
             self.config.display.header(*self.HEADER, file_name=self.current_target_file_name)
         elif self.HEADER:
             self.config.display.header(self.HEADER, file_name=self.current_target_file_name)
-    
+
     def footer(self):
         '''
         Displays the scan footer.
@@ -427,7 +492,13 @@ class Module(object):
         Returns None.
         '''
         self.config.display.footer()
-            
+
+    def reset_dependencies(self):
+        # Reset all dependency modules
+        for dependency in self.dependencies:
+            if hasattr(self, dependency.attribute):
+                getattr(self, dependency.attribute).reset()
+
     def main(self, parent):
         '''
         Responsible for calling self.init, initializing self.config.display, and calling self.run.
@@ -437,10 +508,16 @@ class Module(object):
         self.status = parent.status
         self.modules = parent.loaded_modules
 
-        # Reset all dependency modules
-        for dependency in self.dependencies:
-            if hasattr(self, dependency.attribute):
-                getattr(self, dependency.attribute).reset()
+        # A special exception for the extractor module, which should be allowed to
+        # override the verbose setting, e.g., if --matryoshka has been specified
+        if hasattr(self, "extractor") and self.extractor.config.verbose:
+            self.config.verbose = self.config.display.verbose = True
+
+        if not self.config.files:
+            binwalk.core.common.debug("No target files specified, module %s terminated" % self.name)
+            return False
+
+        self.reset_dependencies()
 
         try:
             self.init()
@@ -457,7 +534,7 @@ class Module(object):
         except Exception as e:
             self.error(exception=e)
             return False
-        
+
         self._plugins_pre_scan()
 
         try:
@@ -517,7 +594,13 @@ class Modules(object):
         for (k,v) in iterator(kargv):
             k = self._parse_api_opt(k)
             if v not in [True, False, None]:
-                argv.append("%s %s" % (k, v))
+                if not isinstance(v, list):
+                    v = [v]
+                for value in v:
+                    if not isinstance(value, str):
+                        value = str(bytes2str(value))
+                    argv.append(k)
+                    argv.append(value)
             else:
                 argv.append(k)
 
@@ -573,9 +656,9 @@ class Modules(object):
             help_string += "\n%s Options:\n" % module.TITLE
 
             for module_option in module.CLI:
-                if module_option.long:
+                if module_option.long and not module_option.hidden:
                     long_opt = '--' + module_option.long
-                    
+
                     if module_option.dtype:
                         optargs = "=<%s>" % module_option.dtype
                     else:
@@ -586,7 +669,7 @@ class Modules(object):
                     else:
                         short_opt = "   "
 
-                    fmt = "    %%s %%s%%-%ds%%s\n" % (32-len(long_opt))
+                    fmt = "    %%s %%s%%-%ds%%s\n" % (25-len(long_opt))
                     help_string += fmt % (short_opt, long_opt, optargs, module_option.description)
 
         return help_string + "\n"
@@ -632,13 +715,13 @@ class Modules(object):
             self.loaded_modules[module] = obj
 
         return obj
-            
+
     def load(self, module, kwargs={}):
         argv = self.argv(module, argv=self.arguments)
         argv.update(kwargs)
         argv.update(self.dependencies(module, argv['enabled']))
         return module(**argv)
-        
+
     def dependencies(self, module, module_enabled):
         import binwalk.modules
         attributes = {}
@@ -650,7 +733,7 @@ class Modules(object):
                 dependency.module = getattr(binwalk.modules, dependency.name)
             else:
                 raise ModuleException("%s depends on %s which was not found in binwalk.modules.__init__.py\n" % (str(module), dependency.name))
-                
+
             # No recursive dependencies, thanks
             if dependency.module == module:
                 continue
@@ -663,10 +746,10 @@ class Modules(object):
             # set any custom kwargs for those dependencies.
             if module_enabled or not dependency.kwargs:
                 depobj = self.run(dependency.module, dependency=True, kwargs=dependency.kwargs)
-            
+
             # If a dependency failed, consider this a non-recoverable error and raise an exception
             if depobj.errors:
-                raise ModuleException("Failed to load " + dependency.name)
+                raise ModuleException("Failed to load " + dependency.name + " module")
             else:
                 attributes[dependency.attribute] = depobj
 
@@ -675,7 +758,7 @@ class Modules(object):
     def argv(self, module, argv=sys.argv[1:]):
         '''
         Processes argv for any options specific to the specified module.
-    
+
         @module - The module to process argv for.
         @argv   - A list of command line arguments (excluding argv[0]).
 
@@ -686,6 +769,9 @@ class Modules(object):
         longs = []
         shorts = ""
         parser = argparse.ArgumentParser(add_help=False)
+        # Hack: This allows the ListActionParser class to correllate short options to long options.
+        #       There is probably a built-in way to do this in the argparse.ArgumentParser class?
+        parser.short_to_long = {}
 
         # Must build arguments from all modules so that:
         #
@@ -694,18 +780,25 @@ class Modules(object):
         for m in self.list(attribute="CLI"):
 
             for module_option in m.CLI:
+
+                parser_args = []
+                parser_kwargs = {}
+
                 if not module_option.long:
                     continue
 
-                if module_option.type is None:
-                    action = 'store_true'
-                else:
-                    action = None
-
                 if module_option.short:
-                    parser.add_argument('-' + module_option.short, '--' + module_option.long, action=action, dest=module_option.long)
-                else:
-                    parser.add_argument('--' + module_option.long, action=action, dest=module_option.long)
+                    parser_args.append('-' + module_option.short)
+                parser_args.append('--' + module_option.long)
+                parser_kwargs['dest'] = module_option.long
+
+                if module_option.type is None:
+                    parser_kwargs['action'] = 'store_true'
+                elif module_option.type is list:
+                    parser_kwargs['action'] = 'append'
+                    parser.short_to_long[module_option.short] = module_option.long
+
+                parser.add_argument(*parser_args, **parser_kwargs)
 
         args, unknown = parser.parse_known_args(argv)
         args = args.__dict__
@@ -724,7 +817,7 @@ class Modules(object):
 
                 # Loop through all the kwargs for this command line option
                 for (name, default_value) in iterator(module_option.kwargs):
-                    
+
                     # If this kwarg has not been previously processed, or if its priority is equal to or
                     # greater than the previously processed kwarg's priority, then let's process it.
                     if not has_key(last_priority, name) or last_priority[name] <= module_option.priority:
@@ -732,42 +825,16 @@ class Modules(object):
                         # Track the priority for future iterations that may process the same kwarg name
                         last_priority[name] = module_option.priority
 
-                        # If the specified type for these kwargs is None, just set the kwarg to its specified default value.
-                        # Else, set it to the value specified from the user.
-                        if module_option.type is not None:
-                            value = args[module_option.long]
-                        else:
-                            value = default_value
-
-                        # Convert the user-supplied value into the type specified in module_option.type. 
-                        # Do this manually as argparse doesn't seem to be able to handle hexadecimal values.
                         try:
-                            # Only convert the user-supplied value to a specific type if this kwarg's default
-                            # type is the same as the type specified for the module option.
-                            if value != default_value and type(default_value) == module_option.type:
-                                if module_option.type == int:
-                                    kwargs[name] = int(value, 0)
-                                elif module_option.type == float:
-                                    kwargs[name] = float(value)
-                                elif module_option.type == dict:
-                                    if not has_key(kwargs, name):
-                                        kwargs[name] = {}
-                                    kwargs[name][len(kwargs[name])] = value
-                                elif module_option.type == list:
-                                    if not has_key(kwargs, name):
-                                        kwargs[name] = []
-                                    kwargs[name].append(value)
-                                else:
-                                    kwargs[name] = value
-                            else:
-                                kwargs[name] = value
+                            kwargs[name] = module_option.convert(args[module_option.long], default_value)
                         except KeyboardInterrupt as e:
                             raise e
                         except Exception as e:
                             raise ModuleException("Invalid usage: %s" % str(e))
 
+        binwalk.core.common.debug("%s :: %s => %s" % (module.TITLE, str(argv), str(kwargs)))
         return kwargs
-    
+
     def kwargs(self, obj, kwargs):
         '''
         Processes a module's kwargs. All modules should use this for kwarg processing.

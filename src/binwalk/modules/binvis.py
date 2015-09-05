@@ -1,3 +1,5 @@
+# Generates 3D visualizations of input files.
+
 import os
 from binwalk.core.compat import *
 from binwalk.core.common import BlockFile
@@ -24,14 +26,14 @@ class Plotter(Module):
                    kwargs={'axis' : 2, 'enabled' : True},
                    description='Project data points onto 3D cube walls only'),
             Option(short='Z',
-                   long='max-points',
+                   long='points',
                    type=int,
                    kwargs={'max_points' : 0},
                    description='Set the maximum number of plotted data points'),
-            Option(short='V',
-                   long='show-grids',
-                   kwargs={'show_grids' : True},
-                   description='Display the x-y-z grids in the resulting plot'),
+#            Option(short='V',
+#                   long='grids',
+#                   kwargs={'show_grids' : True},
+#                   description='Display the x-y-z grids in the resulting plot'),
     ]
 
     KWARGS = [
@@ -70,9 +72,9 @@ class Plotter(Module):
         self.app = QtGui.QApplication([])
         self.window = gl.GLViewWidget()
         self.window.opts['distance'] = self.VIEW_DISTANCE
-        
+
         if len(self.config.target_files) == 1:
-            self.window.setWindowTitle(self.config.target_files[0].name)
+            self.window.setWindowTitle(self.config.target_files[0])
 
     def _print(self, message):
         '''
@@ -84,7 +86,7 @@ class Plotter(Module):
     def _generate_plot_points(self, data_points):
         '''
         Generates plot points from a list of data points.
-        
+
         @data_points - A dictionary containing each unique point and its frequency of occurance.
 
         Returns a set of plot points.
@@ -96,7 +98,7 @@ class Plotter(Module):
 
         # If the number of data points exceeds the maximum number of allowed data points, use a
         # weighting system to eliminate data points that occur less freqently.
-        if sum(data_points.itervalues()) > self.max_points:
+        if sum(data_points.values()) > self.max_points:
 
             # First, generate a set of weight values 1 - 10
             for i in range(1, 11):
@@ -135,11 +137,13 @@ class Plotter(Module):
 
         for point in sorted(data_points, key=data_points.get, reverse=True):
             plot_points[point] = data_points[point]
-            self.result(point=point)
+            # Register this as a result in case future modules need access to the raw point information,
+            # but mark plot as False to prevent the entropy module from attempting to overlay this data on its graph.
+            self.result(point=point, plot=False)
             total += 1
             if total >= self.max_points:
                 break
-                    
+
         return plot_points
 
     def _generate_data_point(self, data):
@@ -176,7 +180,7 @@ class Plotter(Module):
             i = 0
             while (i+(self.axis-1)) < dlen:
                 point = self._generate_data_point(data[i:i+self.axis])
-                if has_key(data_points, point):    
+                if has_key(data_points, point):
                     data_points[point] += 1
                 else:
                     data_points[point] = 1
@@ -187,7 +191,7 @@ class Plotter(Module):
     def _generate_plot(self, plot_points):
         import numpy as np
         import pyqtgraph.opengl as gl
-        
+
         nitems = float(len(plot_points))
 
         pos = np.empty((nitems, 3))
@@ -205,9 +209,12 @@ class Plotter(Module):
 
             # Give points that occur more frequently a brighter color and larger point size.
             # Frequency is determined as a percentage of total unique data points.
-            if frequency_percentage > .005:
+            if frequency_percentage > .010:
                 size[i] = .20
                 r = 1.0
+            elif frequency_percentage > .005:
+                size[i] = .15
+                b = 1.0
             elif frequency_percentage > .002:
                 size[i] = .10
                 g = 1.0
@@ -275,7 +282,7 @@ class Plotter(Module):
         Plot data points within a 3D cube.
         '''
         return (ord(data[0]), ord(data[1]), ord(data[2]))
-    
+
     def _generate_2d_data_point(self, data):
         '''
         Plot data points projected on each cube face.
@@ -296,7 +303,7 @@ class Plotter(Module):
             return (ord(data[0]), 255, ord(data[1]))
         elif self.plane_count == 5:
             return (ord(data[0]), ord(data[1]), 255)
-    
+
     def run(self):
         self.plot()
         return True

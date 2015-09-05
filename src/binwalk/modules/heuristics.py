@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-# Routines to perform Monte Carlo Pi approximation and Chi Squared tests. 
+# Routines to perform Chi Squared tests. 
 # Used for fingerprinting unknown areas of high entropy (e.g., is this block of high entropy data compressed or encrypted?).
 # Inspired by people who actually know what they're doing: http://www.fourmilab.ch/random/
 
@@ -102,7 +101,7 @@ class HeuristicCompressionAnalyzer(Module):
                    long='trigger',
                    kwargs={'trigger_level' : 0},
                    type=float,
-                   description='Set the entropy trigger level (0.0 - 1.0)'),
+                   description='Set the entropy trigger level (0.0 - 1.0, default: %.2f)' % ENTROPY_TRIGGER),
     ]
 
     KWARGS = [
@@ -114,6 +113,12 @@ class HeuristicCompressionAnalyzer(Module):
         self.blocks = {}
 
         self.HEADER[-1] = "HEURISTIC ENTROPY ANALYSIS"
+
+        # Trigger level sanity check
+        if self.trigger_level > 1.0:
+            self.trigger_level = 1.0
+        elif self.trigger_level < 0.0:
+            self.trigger_level = 0.0
 
         if self.config.block:
             self.block_size = self.config.block

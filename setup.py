@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-from __future__ import print_function
 import os
 import sys
+import shutil
 import tempfile
 import subprocess
 from distutils.core import setup, Command
@@ -14,13 +14,6 @@ try:
     raw_input
 except NameError:
     raw_input = input
-
-# This is super hacky.
-if "--yes" in sys.argv:
-    sys.argv.pop(sys.argv.index("--yes"))
-    IGNORE_WARNINGS = True
-else:
-    IGNORE_WARNINGS = False
 
 # cd into the src directory, no matter where setup.py was invoked from
 os.chdir(os.path.join(os.path.dirname(os.path.realpath(__file__)), "src"))
@@ -41,24 +34,6 @@ def which(command):
 
     return location
 
-def warning(lines, terminate=True, prompt=True):
-    WIDTH = 115
-
-    if not IGNORE_WARNINGS:
-        print("\n" + "*" * WIDTH)
-        for line in lines:
-            print(line)
-        print("*" * WIDTH, "\n")
-
-        if prompt:
-            if raw_input('Continue installation anyway (Y/n)? ').lower().startswith('n'):
-                terminate = True
-            else:
-                terminate = False
-
-        if terminate:
-            sys.exit(1)
-
 def find_binwalk_module_paths():
     paths = []
 
@@ -72,35 +47,126 @@ def find_binwalk_module_paths():
 
     return paths
 
-def remove_binwalk_module():
-    for path in find_binwalk_module_paths():
+def remove_binwalk_module(pydir=None, pybin=None):
+    if pydir:
+        module_paths = [pydir]
+    else:
+        module_paths = find_binwalk_module_paths()
+
+    for path in module_paths:
         try:
             remove_tree(path)
         except OSError as e:
             pass
-        
-    script_path = which(MODULE_NAME)
-    if script_path:
+
+    if not pybin:
+        pybin = which(MODULE_NAME)
+
+    if pybin:
         try:
-            print("removing '%s'" % script_path)
-            os.unlink(script_path)
+            sys.stdout.write("removing '%s'\n" % pybin)
+            os.remove(pybin)
         except KeyboardInterrupt as e:
             pass
         except Exception as e:
             pass
 
-class UninstallCommand(Command):
-    description = "Uninstalls the Python module"
-    user_options = []
+class IDAUnInstallCommand(Command):
+    description = "Uninstalls the binwalk IDA plugin module"
+    user_options = [
+                    ('idadir=', None, 'Specify the path to your IDA install directory.'),
+    ]
 
     def initialize_options(self):
-        pass
+        self.idadir = None
+        self.mydir = os.path.dirname(os.path.realpath(__file__))
 
     def finalize_options(self):
         pass
 
     def run(self):
-        remove_binwalk_module()
+        if self.idadir is None:
+            sys.stderr.write("Please specify the path to your IDA install directory with the '--idadir' option!\n")
+            return
+
+        binida_dst_path = os.path.join(self.idadir, 'plugins', 'binida.py')
+        binwalk_dst_path = os.path.join(self.idadir, 'python', 'binwalk')
+
+        if os.path.exists(binida_dst_path):
+            sys.stdout.write("removing %s\n" % binida_dst_path)
+            os.remove(binida_dst_path)
+        if os.path.exists(binwalk_dst_path):
+            sys.stdout.write("removing %s\n" % binwalk_dst_path)
+            shutil.rmtree(binwalk_dst_path)
+
+class IDAInstallCommand(Command):
+    description = "Installs the binwalk IDA plugin module"
+    user_options = [
+                    ('idadir=', None, 'Specify the path to your IDA install directory.'),
+    ]
+
+    def initialize_options(self):
+        self.idadir = None
+        self.mydir = os.path.dirname(os.path.realpath(__file__))
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        if self.idadir is None:
+            sys.stderr.write("Please specify the path to your IDA install directory with the '--idadir' option!\n")
+            return
+
+        binida_src_path = os.path.join(self.mydir, 'scripts', 'binida.py')
+        binida_dst_path = os.path.join(self.idadir, 'plugins')
+
+        if not os.path.exists(binida_src_path):
+            sys.stderr.write("ERROR: could not locate IDA plugin file '%s'!\n" % binida_src_path)
+            return
+        if not os.path.exists(binida_dst_path):
+            sys.stderr.write("ERROR: could not locate the IDA plugins directory '%s'! Check your --idadir option.\n" % binida_dst_path)
+            return
+
+        binwalk_src_path = os.path.join(self.mydir, 'binwalk')
+        binwalk_dst_path = os.path.join(self.idadir, 'python')
+
+        if not os.path.exists(binwalk_src_path):
+            sys.stderr.write("ERROR: could not locate binwalk source directory '%s'!\n" % binwalk_src_path)
+            return
+        if not os.path.exists(binwalk_dst_path):
+            sys.stderr.write("ERROR: could not locate the IDA python directory '%s'! Check your --idadir option.\n" % binwalk_dst_path)
+            return
+
+        binida_dst_path = os.path.join(binida_dst_path, 'binida.py')
+        binwalk_dst_path = os.path.join(binwalk_dst_path, 'binwalk')
+
+        if os.path.exists(binida_dst_path):
+            os.remove(binida_dst_path)
+        if os.path.exists(binwalk_dst_path):
+            shutil.rmtree(binwalk_dst_path)
+
+        sys.stdout.write("copying %s -> %s\n" % (binida_src_path, binida_dst_path))
+        shutil.copyfile(binida_src_path, binida_dst_path)
+
+        sys.stdout.write("copying %s -> %s\n" % (binwalk_src_path, binwalk_dst_path))
+        shutil.copytree(binwalk_src_path, binwalk_dst_path)
+
+class UninstallCommand(Command):
+    description = "Uninstalls the Python module"
+    user_options = [
+                    ('pydir=', None, 'Specify the path to the binwalk python module to be removed.'),
+                    ('pybin=', None, 'Specify the path to the binwalk executable to be removed.'),
+    ]
+
+    def initialize_options(self):
+        self.pydir = None
+        self.pybin = None
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        remove_binwalk_module(self.pydir, self.pybin)
 
 class CleanCommand(Command):
     description = "Clean Python build directories"
@@ -127,52 +193,23 @@ class CleanCommand(Command):
         except Exception:
             pass
 
-# Check pre-requisite Python modules during an install
-if "install" in sys.argv:
-    print("checking pre-requisites")
-    try:
-        import pyqtgraph
-        from pyqtgraph.Qt import QtCore, QtGui, QtOpenGL
-    except ImportError as e:
-        msg = ["Pre-requisite warning: " + str(e),
-               "To take advantage of %s's graphing capabilities, please install this module." % MODULE_NAME,
-        ]
-   
-        warning(msg, prompt=True)
-
-    # If an older version of binwalk is currently installed, completely remove it to prevent conflicts
-    existing_binwalk_modules = find_binwalk_module_paths()
-    if existing_binwalk_modules and not os.path.exists(os.path.join(existing_binwalk_modules[0], "core")):
-        remove_binwalk_module()
-
-# Re-build the magic file during a build/install
-if "install" in sys.argv or "build" in sys.argv:
-    # Generate a new magic file from the files in the magic directory
-    print("creating %s magic file" % MODULE_NAME)
-    magic_files = os.listdir("magic")
-    magic_files.sort()
-    fd = open("%s/magic/%s" % (MODULE_NAME, MODULE_NAME), "wb")
-    for magic in magic_files:
-        fpath = os.path.join("magic", magic)
-        if os.path.isfile(fpath):
-            fd.write(open(fpath, "rb").read())
-    fd.close()
-
 # The data files to install along with the module
-install_data_files = ["magic/*", "config/*", "plugins/*", "modules/*", "core/*"]
+install_data_files = []
+for data_dir in ["magic", "config", "plugins", "modules", "core"]:
+        install_data_files.append("%s%s*" % (data_dir, os.path.sep))
 
 # Install the module, script, and support files
 setup(name = MODULE_NAME,
-      version = "2.0.0 beta",
+      version = "2.1.0",
       description = "Firmware analysis tool",
       author = "Craig Heffner",
       url = "https://github.com/devttys0/%s" % MODULE_NAME,
 
-      requires = ["magic", "pyqtgraph"],
+      requires = [],
       packages = [MODULE_NAME],
       package_data = {MODULE_NAME : install_data_files},
       scripts = [os.path.join("scripts", MODULE_NAME)],
 
-      cmdclass = {'clean' : CleanCommand, 'uninstall' : UninstallCommand}
+      cmdclass = {'clean' : CleanCommand, 'uninstall' : UninstallCommand, 'idainstall' : IDAInstallCommand, 'idauninstall' : IDAUnInstallCommand}
 )
 

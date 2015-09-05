@@ -1,3 +1,9 @@
+# Performs fuzzy hashing against files/directories.
+# Unlike other scans, this doesn't produce any file offsets, so its results are not applicable to 
+# some other scans, such as the entropy scan.
+# Additionally, this module currently doesn't support certian general options (length, offset, swap, etc),
+# as the libfuzzy C library is responsible for opening and scanning the specified files.
+
 import os
 import re
 import ctypes
@@ -65,7 +71,6 @@ class HashMatch(Module):
         Kwarg(name='strings', default=False),
         Kwarg(name='same', default=True),
         Kwarg(name='symlinks', default=False),
-        Kwarg(name='name', default=False),
         Kwarg(name='max_results', default=None),
         Kwarg(name='abspath', default=False),
         Kwarg(name='filter_by_name', default=False),
@@ -73,7 +78,6 @@ class HashMatch(Module):
         Kwarg(name='enabled', default=False),
     ]
 
-    # Requires libfuzzy.so
     LIBRARY_NAME = "fuzzy"
     LIBRARY_FUNCTIONS = [
             binwalk.core.C.Function(name="fuzzy_hash_buf", type=int),
@@ -87,7 +91,7 @@ class HashMatch(Module):
     FUZZY_MIN_FILE_SIZE = 4096
 
     HEADER_FORMAT = "\n%s" + " " * 11 + "%s\n" 
-    RESULT_FORMAT = "%4d%%" + " " * 16 + "%s\n"
+    RESULT_FORMAT = "%d%%" + " " * 17 + "%s\n"
     HEADER = ["SIMILARITY", "FILE NAME"]
     RESULT = ["percentage", "description"]
 
@@ -104,7 +108,14 @@ class HashMatch(Module):
     def _show_result(self, match, fname):
         if self.abspath:
             fname = os.path.abspath(fname)
-        self.result(percentage=match, description=fname)
+
+        # Add description string padding for alignment
+        if match < 100:
+            fname = ' ' + fname
+        if match < 10:
+            fname = ' ' + fname
+
+        self.result(percentage=match, description=fname, plot=False)
 
     def _compare_files(self, file1, file2):
         '''
@@ -184,7 +195,7 @@ class HashMatch(Module):
                         else:
                             return self.lib.fuzzy_compare(hash1, hash2)
                 except Exception as e:
-                    print ("WARNING: Exception while doing fuzzy hash: %s" % e)
+                    binwalk.core.common.warning("Exception while doing fuzzy hash: %s" % str(e))
 
         return None
 
@@ -276,15 +287,15 @@ class HashMatch(Module):
 
         for directory in haystack:
             dir_files = self._get_file_list(directory)
-        
-            for f in source_files:
-                if f in dir_files:
-                    file1 = os.path.join(needle, f)
-                    file2 = os.path.join(directory, f)
+
+            for source_file in source_files:
+                for dir_file in dir_files:
+                    file1 = os.path.join(needle, source_file)
+                    file2 = os.path.join(directory, dir_file)
 
                     m = self._compare_files(file1, file2)
                     if m is not None and self.is_match(m):
-                        self._show_result(m, file2)
+                        self._show_result(m, "%s => %s" % (file1, file2))
 
                         self.total += 1
                         if self.max_results and self.total >= self.max_results:
@@ -297,14 +308,13 @@ class HashMatch(Module):
         '''
         Main module method.
         '''
-        needle = self.next_file().name
-        haystack = []
+        # Access the raw self.config.files list directly here, since we accept both
+        # files and directories and self.next_file only works for files.
+        needle = self.config.files[0]
+        haystack = self.config.files[1:]
 
         self.header()
                 
-        for fp in iter(self.next_file, None):
-            haystack.append(fp.name)
-
         if os.path.isfile(needle):
             if os.path.isfile(haystack[0]):
                 self.hash_files(needle, haystack)
