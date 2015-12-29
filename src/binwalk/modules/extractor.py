@@ -72,6 +72,11 @@ class Extractor(Module):
                    type=int,
                    kwargs={'max_size' : 0},
                    description='Limit the size of each extracted file'),
+            Option(short='n',
+                   long='count',
+                   type=int,
+                   kwargs={'max_count' : 0},
+                   description='Limit the number of extracted files'),
             Option(short='r',
                    long='rm',
                    kwargs={'remove_after_execute' : True},
@@ -84,6 +89,7 @@ class Extractor(Module):
 
     KWARGS = [
             Kwarg(name='max_size', default=None),
+            Kwarg(name='max_count', default=None),
             Kwarg(name='base_directory', default=None),
             Kwarg(name='remove_after_execute', default=False),
             Kwarg(name='load_default_rules', default=False),
@@ -100,6 +106,8 @@ class Extractor(Module):
         self.directory = None
         # Key value pairs of input file path and output extraction path
         self.output = {}
+        # Number of extracted files
+        self.extraction_count = 0
 
         if self.load_default_rules:
             self.load_defaults()
@@ -154,7 +162,7 @@ class Extractor(Module):
         # Only extract valid results that have been marked for extraction and displayed to the user.
         # Note that r.display is still True even if --quiet has been specified; it is False if the result has been
         # explicitly excluded via the -y/-x options.
-        if r.valid and r.extract and r.display:
+        if r.valid and r.extract and r.display and (not self.max_count or self.extraction_count < self.max_count):
             # Create some extract output for this file, it it doesn't already exist
             if not binwalk.core.common.has_key(self.output, r.file.path):
                 self.output[r.file.path] = ExtractInfo()
@@ -165,6 +173,9 @@ class Extractor(Module):
 
             # If the extraction was successful, self.extract will have returned the output directory and name of the dd'd file
             if extraction_directory and dd_file:
+                # Track the number of extracted files
+                self.extraction_count += 1
+
                 # Get the full path to the dd'd file and save it in the output info for this file
                 dd_file_path = os.path.join(extraction_directory, dd_file)
                 self.output[r.file.path].carved[r.offset] = dd_file_path
@@ -190,7 +201,10 @@ class Extractor(Module):
                         self.output[r.file.path].extracted[r.offset].append(real_file_path)
 
                     # If recursion was specified, and the file is not the same one we just dd'd
-                    if self.matryoshka and file_path != dd_file_path and scan_extracted_files:
+                    if (self.matryoshka and
+                        file_path != dd_file_path and
+                        scan_extracted_files and
+                        self.directory in real_file_path):
                         # If the recursion level of this file is less than or equal to our desired recursion level
                         if len(real_file_path.split(self.directory)[1].split(os.path.sep)) <= self.matryoshka:
                             # If this is a directory and we are supposed to process directories for this extractor,
@@ -689,7 +703,7 @@ class Extractor(Module):
         except KeyboardInterrupt as e:
             raise e
         except Exception as e:
-            binwalk.core.common.warning("Extractor.execute failed to run external extrator '%s': %s" % (str(cmd), str(e)))
+            binwalk.core.common.warning("Extractor.execute failed to run external extractor '%s': %s" % (str(cmd), str(e)))
             retval = None
 
         if tmp is not None:
