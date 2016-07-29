@@ -1,11 +1,21 @@
 #!/bin/bash
 
+# Check for the --yes command line argument to skip yes/no prompts
+if [ "$1" = "--yes" ]
+then
+    YES=1
+else
+    YES=0
+fi
+
+set -o nounset
+
 REQUIRED_UTILS="wget tar python"
 APTCMD="apt-get"
 YUMCMD="yum"
-APT_CANDIDATES="git build-essential libqt4-opengl mtd-utils gzip bzip2 tar arj lhasa p7zip p7zip-full cabextract cramfsprogs cramfsswap squashfs-tools zlib1g-dev liblzma-dev liblzo2-dev sleuthkit"
-PYTHON2_APT_CANDIDATES="python-lzo python-lzma python-pip python-opengl python-qt4 python-qt4-gl python-numpy python-scipy"
-PYTHON3_APT_CANDIDATES="python3-pip python3-opengl python3-pyqt4 python3-pyqt4.qtopengl python3-numpy python3-scipy"
+APT_CANDIDATES="git build-essential libqt4-opengl mtd-utils gzip bzip2 tar arj lhasa p7zip p7zip-full cabextract cramfsprogs cramfsswap squashfs-tools zlib1g-dev liblzma-dev liblzo2-dev sleuthkit openjdk-7-jdk"
+PYTHON2_APT_CANDIDATES="python-crypto python-lzo python-lzma python-pip python-opengl python-qt4 python-qt4-gl python-numpy python-scipy"
+PYTHON3_APT_CANDIDATES="python3-crypto python3-pip python3-opengl python3-pyqt4 python3-pyqt4.qtopengl python3-numpy python3-scipy"
 PYTHON3_YUM_CANDIDATES=""
 YUM_CANDIDATES="git gcc gcc-c++ make openssl-devel qtwebkit-devel qt-devel gzip bzip2 tar arj p7zip p7zip-plugins cabextract squashfs-tools zlib zlib-devel lzo lzo-devel xz xz-compat-libs xz-libs xz-devel xz-lzma-compat python-backports-lzma lzip pyliblzma perl-Compress-Raw-Lzma"
 PYTHON2_YUM_CANDIDATES="python-pip python-opengl python-qt4 numpy python-numdisplay numpy-2f python-Bottleneck scipy"
@@ -22,16 +32,23 @@ else
     REQUIRED_UTILS="sudo $REQUIRED_UTILS"
 fi
 
+function install_yaffshiv
+{
+    git clone https://github.com/devttys0/yaffshiv
+    (cd yaffshiv && $SUDO python2 setup.py install)
+    $SUDO rm -rf yaffshiv
+}
+
 function install_sasquatch
 {
     git clone https://github.com/devttys0/sasquatch
-    (cd sasquatch && make && $SUDO make install)
+    (cd sasquatch && $SUDO ./build.sh)
     $SUDO rm -rf sasquatch
 }
 
 function install_jefferson
 {
-    $SUDO pip install cstruct
+    install_pip_package cstruct
     git clone https://github.com/sviehb/jefferson
     (cd jefferson && $SUDO python2 setup.py install)
     $SUDO rm -rf jefferson
@@ -51,7 +68,7 @@ function install_ubireader
 {
     git clone https://github.com/jrspruitt/ubi_reader
     (cd ubi_reader && $SUDO python setup.py install)
-    rm -rf ubi_reader
+    $SUDO rm -rf ubi_reader
 }
 
 function install_pip_package
@@ -81,19 +98,22 @@ function find_path
 }
 
 # Make sure the user really wants to do this
-echo ""
-echo "WARNING: This script will download and install all required and optional dependencies for binwalk."
-echo "         This script has only been tested on, and is only intended for, Debian based systems."
-echo "         Some dependencies are downloaded via unsecure (HTTP) protocols."
-echo "         This script requires internet access."
-echo "         This script requires root privileges."
-echo ""
-echo -n "Continue [y/N]? "
-read YN
-if [ "$(echo "$YN" | grep -i -e 'y' -e 'yes')" == "" ]
+if [ $YES -eq 0 ]
 then
-    echo "Quitting..."
-    exit 1
+    echo ""
+    echo "WARNING: This script will download and install all required and optional dependencies for binwalk."
+    echo "         This script has only been tested on, and is only intended for, Debian based systems."
+    echo "         Some dependencies are downloaded via unsecure (HTTP) protocols."
+    echo "         This script requires internet access."
+    echo "         This script requires root privileges."
+    echo ""
+    echo -n "Continue [y/N]? "
+    read YN
+    if [ "$(echo "$YN" | grep -i -e 'y' -e 'yes')" == "" ]
+    then
+        echo "Quitting..."
+        exit 1
+    fi
 fi
 
 # Check to make sure we have all the required utilities installed
@@ -144,10 +164,16 @@ fi
 
 # Do the install(s)
 cd /tmp
-sudo $PKGCMD $PKGCMD_OPTS $PKG_CANDIDTES
+$SUDO $PKGCMD $PKGCMD_OPTS $PKG_CANDIDATES
+if [ $? -ne 0 ]
+    then
+    echo "Package installation failed: $PKG_CANDIDATES"
+    exit 1
+fi
 install_pip_package pyqtgraph
 install_pip_package capstone
 install_sasquatch
+install_yaffshiv
 install_jefferson
 install_unstuff
 install_ubireader
