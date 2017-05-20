@@ -2,7 +2,9 @@ import os
 import subprocess
 import binwalk.core.plugin
 
+
 class CPIOPlugin(binwalk.core.plugin.Plugin):
+
     '''
     Ensures that ASCII CPIO archive entries only get extracted once.
     Also provides an internal CPIO extraction wrapper around the Unix
@@ -40,10 +42,11 @@ class CPIOPlugin(binwalk.core.plugin.Plugin):
             return
 
         try:
-            result = subprocess.call(['cpio', '-d', '-i', '--no-absolute-filenames'],
-                                     stdin=fpin,
-                                     stderr=fperr,
-                                     stdout=fperr)
+            result = subprocess.call(
+                ['cpio', '-d', '-i', '--no-absolute-filenames'],
+                stdin=fpin,
+                stderr=fperr,
+                stdout=fperr)
         except OSError:
             result = -1
 
@@ -61,16 +64,41 @@ class CPIOPlugin(binwalk.core.plugin.Plugin):
         self.found_archive = False
         self.found_archive_in_file = None
 
+    def _get_file_name(self, description):
+        name = ''
+        if 'file name: "' in description:
+            name = description.split('file name: "')[1].split('"')[0]
+        return name
+
+    def _get_file_name_length(self, description):
+        length = 0
+        if 'file name length: "' in description:
+            length_string = description.split(
+                'file name length: "')[1].split('"')[0]
+            length = int(length_string, 0)
+        return length
+
     def scan(self, result):
         if result.valid:
             # ASCII CPIO archives consist of multiple entries, ending with an entry named 'TRAILER!!!'.
             # Displaying each entry is useful, as it shows what files are contained in the archive,
-            # but we only want to extract the archive when the first entry is found.
+            # but we only want to extract the archive when the first entry is
+            # found.
             if result.description.startswith('ASCII cpio archive'):
+
+                # Validate the reported name length
+                file_name = self._get_file_name(result.description)
+                file_name_length = self._get_file_name_length(
+                    result.description)
+                if len(file_name) != file_name_length:
+                    result.valid = False
+                    return
+
                 self.consecutive_hits += 1
 
                 if not self.found_archive or self.found_archive_in_file != result.file.name:
-                    # This is the first entry. Set found_archive and allow the scan to continue normally.
+                    # This is the first entry. Set found_archive and allow the
+                    # scan to continue normally.
                     self.found_archive_in_file = result.file.name
                     self.found_archive = True
                     result.extract = True
@@ -92,5 +120,6 @@ class CPIOPlugin(binwalk.core.plugin.Plugin):
                 self.consecutive_hits = 0
             elif self.consecutive_hits >= 4:
                 # Ignore other stuff until the end of CPIO is found
-                # TODO: It would be better to jump to the end of this CPIO entry rather than make this assumption...
+                # TODO: It would be better to jump to the end of this CPIO
+                # entry rather than make this assumption...
                 result.valid = False

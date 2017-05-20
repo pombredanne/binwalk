@@ -31,6 +31,12 @@ Although all binwalk run-time dependencies are optional, the `python-lzma` modul
 $ sudo apt-get install python-lzma
 ```
 
+Binwalk uses the `nosetest` library for tests and `coverage` for test-coverage:
+
+```bash
+$ sudo pip install nose coverage
+```
+
 Binwalk uses the `pycrypto` library to decrypt some known encrypted firmware images:
 
 ```bash
@@ -75,7 +81,7 @@ Binwalk relies on multiple external utilties in order to automatically extract/d
 
 ```bash
 # Install standard extraction utilities
-$ sudo apt-get install mtd-utils gzip bzip2 tar arj lhasa p7zip p7zip-full cabextract cramfsprogs cramfsswap squashfs-tools
+$ sudo apt-get install mtd-utils gzip bzip2 tar arj lhasa p7zip p7zip-full cabextract cramfsprogs cramfsswap squashfs-tools sleuthkit default-jdk lzop srecord
 ```
 
 ```bash
