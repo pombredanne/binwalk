@@ -11,6 +11,7 @@ import inspect
 import argparse
 import traceback
 from copy import copy
+import binwalk
 import binwalk.core.statuserver
 import binwalk.core.common
 import binwalk.core.settings
@@ -497,8 +498,7 @@ class Module(object):
             if r.display:
                 display_args = self._build_display_args(r)
                 if display_args:
-                    self.config.display.format_strings(
-                        self.HEADER_FORMAT, self.RESULT_FORMAT)
+                    self.config.display.format_strings(self.HEADER_FORMAT, self.RESULT_FORMAT)
                     self.config.display.result(*display_args)
 
         return r
@@ -519,14 +519,12 @@ class Module(object):
         self.errors.append(e)
 
         if e.exception:
-            sys.stderr.write(
-                "\n" + e.module + " Exception: " + str(e.exception) + "\n")
+            sys.stderr.write("\n" + e.module + " Exception: " + str(e.exception) + "\n")
             sys.stderr.write("-" * exception_header_width + "\n")
             traceback.print_exc(file=sys.stderr)
             sys.stderr.write("-" * exception_header_width + "\n\n")
         elif e.description:
-            sys.stderr.write(
-                "\n" + e.module + " Error: " + e.description + "\n\n")
+            sys.stderr.write("\n" + e.module + " Error: " + e.description + "\n\n")
 
     def header(self):
         '''
@@ -534,17 +532,13 @@ class Module(object):
 
         Returns None.
         '''
-        self.config.display.format_strings(
-            self.HEADER_FORMAT, self.RESULT_FORMAT)
-        self.config.display.add_custom_header(
-            self.VERBOSE_FORMAT, self.VERBOSE)
+        self.config.display.format_strings(self.HEADER_FORMAT, self.RESULT_FORMAT)
+        self.config.display.add_custom_header(self.VERBOSE_FORMAT, self.VERBOSE)
 
         if type(self.HEADER) == type([]):
-            self.config.display.header(
-                *self.HEADER, file_name=self.current_target_file_name)
+            self.config.display.header(*self.HEADER, file_name=self.current_target_file_name)
         elif self.HEADER:
-            self.config.display.header(
-                self.HEADER, file_name=self.current_target_file_name)
+            self.config.display.header(self.HEADER, file_name=self.current_target_file_name)
 
     def footer(self):
         '''
@@ -576,8 +570,7 @@ class Module(object):
             self.config.verbose = self.config.display.verbose = True
 
         if not self.config.files:
-            binwalk.core.common.debug(
-                "No target files specified, module %s terminated" % self.name)
+            binwalk.core.common.debug("No target files specified, module %s terminated" % self.name)
             return False
 
         self.reset_dependencies()
@@ -591,8 +584,7 @@ class Module(object):
             return False
 
         try:
-            self.config.display.format_strings(
-                self.HEADER_FORMAT, self.RESULT_FORMAT)
+            self.config.display.format_strings(self.HEADER_FORMAT, self.RESULT_FORMAT)
         except KeyboardInterrupt as e:
             raise e
         except Exception as e:
@@ -647,8 +639,7 @@ class Modules(object):
         self.arguments = []
         self.executed_modules = {}
         self.default_dependency_modules = {}
-        self.status = Status(
-            completed=0, total=0, fp=None, running=False, shutdown=False, finished=False)
+        self.status = Status(completed=0, total=0, fp=None, running=False, shutdown=False, finished=False)
         self.status_server_started = False
         self.status_service = None
 
@@ -669,7 +660,7 @@ class Modules(object):
         if kargv:
             for (k, v) in iterator(kargv):
                     k = self._parse_api_opt(k)
-                    if v not in [True, False, None]:
+                    if v is not True and v is not False and v is not None:
                         if not isinstance(v, list):
                             v = [v]
                         for value in v:
@@ -722,13 +713,11 @@ class Modules(object):
                 continue
             module_name = file_name[:-3]
             try:
-                user_module = imp.load_source(
-                    module_name, os.path.join(user_modules, file_name))
+                user_module = imp.load_source(module_name, os.path.join(user_modules, file_name))
             except KeyboardInterrupt as e:
                 raise e
             except Exception as e:
-                binwalk.core.common.warning(
-                    "Error loading module '%s': %s" % (file_name, str(e)))
+                binwalk.core.common.warning("Error loading module '%s': %s" % (file_name, str(e)))
 
             for (name, module) in inspect.getmembers(user_module):
                 if inspect.isclass(module) and hasattr(module, attribute):
@@ -743,7 +732,7 @@ class Modules(object):
         Returns the help string.
         '''
         modules = {}
-        help_string = "\nBinwalk v%s\nCraig Heffner, http://www.binwalk.org\n" % binwalk.core.settings.Settings.VERSION
+        help_string = "\nBinwalk v%s\nCraig Heffner, https://github.com/devttys0/binwalk\n" % binwalk.__version__
         help_string += "\nUsage: binwalk [OPTIONS] [FILE1] [FILE2] [FILE3] ...\n"
 
         # Build a dictionary of modules and their ORDER attributes.
@@ -771,8 +760,7 @@ class Modules(object):
                         short_opt = "   "
 
                     fmt = "    %%s %%s%%-%ds%%s\n" % (25 - len(long_opt))
-                    help_string += fmt % (
-                        short_opt, long_opt, optargs, module_option.description)
+                    help_string += fmt % (short_opt, long_opt, optargs, module_option.description)
 
         return help_string + "\n"
 
@@ -854,8 +842,7 @@ class Modules(object):
             if hasattr(binwalk.modules, dependency.name):
                 dependency.module = getattr(binwalk.modules, dependency.name)
             else:
-                raise ModuleException(
-                    "%s depends on %s which was not found in binwalk.modules.__init__.py\n" % (str(module), dependency.name))
+                raise ModuleException("%s depends on %s which was not found in binwalk.modules.__init__.py\n" % (str(module), dependency.name))
 
             # No recursive dependencies, thanks
             if dependency.module == module:
@@ -868,14 +855,12 @@ class Modules(object):
             # Modules that are not enabled (e.g., extraction module) can load any dependency as long as they don't
             # set any custom kwargs for those dependencies.
             if module_enabled or not dependency.kwargs:
-                depobj = self.run(
-                    dependency.module, dependency=True, kwargs=dependency.kwargs)
+                depobj = self.run(dependency.module, dependency=True, kwargs=dependency.kwargs)
 
             # If a dependency failed, consider this a non-recoverable error and
             # raise an exception
             if depobj.errors:
-                raise ModuleException(
-                    "Failed to load " + dependency.name + " module")
+                raise ModuleException("Failed to load " + dependency.name + " module")
             else:
                 attributes[dependency.attribute] = depobj
 
@@ -903,8 +888,8 @@ class Modules(object):
         # Must build arguments from all modules so that:
         #
         #    1) Any conflicting arguments will raise an exception
-        # 2) The only unknown arguments will be the target files, making them
-        # easy to identify
+        #    2) The only unknown arguments will be the target files, making them
+        #       easy to identify
         for m in self.list(attribute="CLI"):
 
             for module_option in m.CLI:
@@ -957,15 +942,13 @@ class Modules(object):
                         last_priority[name] = module_option.priority
 
                         try:
-                            kwargs[name] = module_option.convert(
-                                args[module_option.long], default_value)
+                            kwargs[name] = module_option.convert(args[module_option.long], default_value)
                         except KeyboardInterrupt as e:
                             raise e
                         except Exception as e:
                             raise ModuleException("Invalid usage: %s" % str(e))
 
-        binwalk.core.common.debug("%s :: %s => %s" %
-                                  (module.TITLE, str(argv), str(kwargs)))
+        binwalk.core.common.debug("%s :: %s => %s" % (module.TITLE, str(argv), str(kwargs)))
         return kwargs
 
     def kwargs(self, obj, kwargs):
@@ -990,8 +973,7 @@ class Modules(object):
                 if not hasattr(obj, k):
                     setattr(obj, k, v)
         else:
-            raise Exception(
-                "binwalk.core.module.Modules.process_kwargs: %s has no attribute 'KWARGS'" % str(obj))
+            raise Exception("binwalk.core.module.Modules.process_kwargs: %s has no attribute 'KWARGS'" % str(obj))
 
     def status_server(self, port):
         '''
@@ -1005,11 +987,9 @@ class Modules(object):
         if self.status_server_started == False:
             self.status_server_started = True
             try:
-                self.status_service = binwalk.core.statuserver.StatusServer(
-                    port, self)
+                self.status_service = binwalk.core.statuserver.StatusServer(port, self)
             except Exception as e:
-                binwalk.core.common.warning(
-                    "Failed to start status server on port %d: %s" % (port, str(e)))
+                binwalk.core.common.warning("Failed to start status server on port %d: %s" % (port, str(e)))
 
 
 def process_kwargs(obj, kwargs):

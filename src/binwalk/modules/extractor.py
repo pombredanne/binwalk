@@ -15,8 +15,12 @@ from binwalk.core.module import Module, Option, Kwarg
 from binwalk.core.common import file_size, file_md5, unique_file_name, BlockFile
 
 
-class ExtractInfo(object):
+class ExtractDetails(object):
+    def __init__(self, **kwargs):
+        for (k, v) in kwargs.iteritems():
+            setattr(self, k, v)
 
+class ExtractInfo(object):
     def __init__(self):
         self.carved = {}
         self.extracted = {}
@@ -161,11 +165,9 @@ class Extractor(Module):
                 fp.close()
                 self.pending.append(f)
             except IOError as e:
-                binwalk.core.common.warning(
-                    "Ignoring file '%s': %s" % (f, str(e)))
+                binwalk.core.common.warning("Ignoring file '%s': %s" % (f, str(e)))
         else:
-            binwalk.core.common.warning(
-                "Ignoring file '%s': Not a regular file" % f)
+            binwalk.core.common.warning("Ignoring file '%s': Not a regular file" % f)
 
     def reset(self):
         # Holds a list of pending files that should be scanned; only populated
@@ -204,10 +206,14 @@ class Extractor(Module):
                 self.output[r.file.path] = ExtractInfo()
 
             # Attempt extraction
-            binwalk.core.common.debug(
-                "Extractor callback for %s @%d [%s]" % (r.file.name, r.offset, r.description))
-            (extraction_directory, dd_file, scan_extracted_files) = self.extract(
-                r.offset, r.description, r.file.path, size, r.name)
+            binwalk.core.common.debug("Extractor callback for %s @%d [%s]" % (r.file.name,
+                                                                              r.offset,
+                                                                              r.description))
+            (extraction_directory, dd_file, scan_extracted_files, extraction_utility) = self.extract(r.offset,
+                                                                                                     r.description,
+                                                                                                     r.file.path,
+                                                                                                     size,
+                                                                                                     r.name)
 
             # If the extraction was successful, self.extract will have returned
             # the output directory and name of the dd'd file
@@ -219,7 +225,7 @@ class Extractor(Module):
                 # info for this file
                 dd_file_path = os.path.join(extraction_directory, dd_file)
                 self.output[r.file.path].carved[r.offset] = dd_file_path
-                self.output[r.file.path].extracted[r.offset] = []
+                self.output[r.file.path].extracted[r.offset] = ExtractDetails(files=[], command=extraction_utility)
 
                 # Do a directory listing of the output directory
                 directory_listing = set(os.listdir(extraction_directory))
@@ -242,8 +248,7 @@ class Extractor(Module):
                     # Also keep a list of files created by the extraction
                     # utility
                     if real_file_path != dd_file_path:
-                        self.output[r.file.path].extracted[
-                            r.offset].append(real_file_path)
+                        self.output[r.file.path].extracted[r.offset].files.append(real_file_path)
 
                     # If recursion was specified, and the file is not the same
                     # one we just dd'd
@@ -275,7 +280,18 @@ class Extractor(Module):
     def append_rule(self, r):
         self.extract_rules.append(r.copy())
 
-    def add_rule(self, txtrule=None, regex=None, extension=None, cmd=None, codes=[0, None], recurse=True):
+    def prepend_rule(self, r):
+        self.extract_rules = [r] + self.extract_rules
+
+    def add_rule(self, txtrule=None, regex=None, extension=None, cmd=None, codes=[0, None], recurse=True, prepend=False):
+        rules = self.create_rule(txtrule, regex, extension, cmd, codes, recurse)
+        for r in rules:
+            if prepend:
+                self.prepend_rule(r)
+            else:
+                self.append_rule(r)
+
+    def create_rule(self, txtrule=None, regex=None, extension=None, cmd=None, codes=[0, None], recurse=True):
         '''
         Adds a set of rules to the extraction rule list.
 
@@ -290,6 +306,7 @@ class Extractor(Module):
         Returns None.
         '''
         rules = []
+        created_rules = []
         match = False
         r = {
             'extension': '',
@@ -306,8 +323,7 @@ class Extractor(Module):
             if cmd:
                 r['cmd'] = cmd
 
-            self.append_rule(r)
-            return
+            return [r]
 
         # Process rule string, or list of rule strings
         if not isinstance(txtrule, type([])):
@@ -334,7 +350,9 @@ class Extractor(Module):
 
             # Verify that the match string was retrieved.
             if match:
-                self.append_rule(r)
+                created_rules.append(r)
+
+        return created_rules
 
     def remove_rules(self, description):
         '''
@@ -421,8 +439,7 @@ class Extractor(Module):
         except KeyboardInterrupt as e:
             raise e
         except Exception as e:
-            raise Exception(
-                "Extractor.load_from_file failed to load file '%s': %s" % (fname, str(e)))
+            raise Exception("Extractor.load_from_file failed to load file '%s': %s" % (fname, str(e)))
 
     def load_defaults(self):
         '''
@@ -444,8 +461,7 @@ class Extractor(Module):
                     raise e
                 except Exception as e:
                     if binwalk.core.common.DEBUG:
-                        raise Exception(
-                            "Extractor.load_defaults failed to load file '%s': %s" % (extract_file, str(e)))
+                        raise Exception("Extractor.load_defaults failed to load file '%s': %s" % (extract_file, str(e)))
 
     def get_output_directory_override(self):
         '''
@@ -496,19 +512,16 @@ class Extractor(Module):
                 subdir = ""
 
             if self.output_directory_override:
-                output_directory = os.path.join(
-                    self.directory, subdir, self.output_directory_override)
+                output_directory = os.path.join(self.directory, subdir, self.output_directory_override)
             else:
                 outdir = os.path.join(self.directory, subdir, '_' + basename)
-                output_directory = unique_file_name(
-                    outdir, extension='extracted')
+                output_directory = unique_file_name(outdir, extension='extracted')
 
             if not os.path.exists(output_directory):
                 os.mkdir(output_directory)
 
             self.extraction_directories[path] = output_directory
-            self.output[path].directory = os.path.realpath(
-                output_directory) + os.path.sep
+            self.output[path].directory = os.path.realpath(output_directory) + os.path.sep
         # Else, just use the already created directory
         else:
             output_directory = self.extraction_directories[path]
@@ -544,6 +557,7 @@ class Extractor(Module):
         Returns the name of the extracted file (blank string if nothing was extracted).
         '''
         fname = ''
+        rule = None
         recurse = False
         original_dir = os.getcwd()
         rules = self.match(description)
@@ -551,10 +565,9 @@ class Extractor(Module):
 
         # No extraction rules for this file
         if not rules:
-            return (None, None, False)
+            return (None, None, False, str(None))
         else:
-            binwalk.core.common.debug(
-                "Found %d matching extraction rules" % len(rules))
+            binwalk.core.common.debug("Found %d matching extraction rules" % len(rules))
 
         # Generate the output directory name where extracted files will be
         # stored
@@ -579,8 +592,7 @@ class Extractor(Module):
                     recurse = True
 
                 # Copy out the data to disk, if we haven't already
-                fname = self._dd(
-                    file_path, offset, size, rule['extension'], output_file_name=name)
+                fname = self._dd(file_path, offset, size, rule['extension'], output_file_name=name)
 
                 # If there was a command specified for this rule, try to execute it.
                 # If execution fails, the next rule will be attempted.
@@ -595,8 +607,7 @@ class Extractor(Module):
 
                     # Execute the specified command against the extracted file
                     if self.run_extractors:
-                        extract_ok = self.execute(
-                            rule['cmd'], fname, rule['codes'])
+                        extract_ok = self.execute(rule['cmd'], fname, rule['codes'])
                     else:
                         extract_ok = True
 
@@ -633,7 +644,10 @@ class Extractor(Module):
 
             os.chdir(original_dir)
 
-        return (output_directory, fname, recurse)
+        if rule is not None:
+            return (output_directory, fname, recurse, str(rule['cmd']))
+        else:
+            return (output_directory, fname, recurse, '')
 
     def _entry_offset(self, index, entries, description):
         '''
@@ -665,12 +679,22 @@ class Extractor(Module):
         Returns None if no match is found.
         '''
         rules = []
+        ordered_rules = []
         description = description.lower()
 
         for rule in self.extract_rules:
             if rule['regex'].search(description):
                 rules.append(rule)
-        return rules
+
+        # Plugin rules should take precedence over external extraction commands.
+        for rule in rules:
+            if callable(rule['cmd']):
+                ordered_rules.append(rule)
+        for rule in rules:
+            if not callable(rule['cmd']):
+                ordered_rules.append(rule)
+
+        return ordered_rules
 
     def _parse_rule(self, rule):
         '''
@@ -688,8 +712,7 @@ class Extractor(Module):
                 try:
                     codes[i] = int(codes[i], 0)
                 except ValueError as e:
-                    binwalk.core.common.warning(
-                        "The specified return code '%s' for extractor '%s' is not a valid number!" % (codes[i], values[0]))
+                    binwalk.core.common.warning("The specified return code '%s' for extractor '%s' is not a valid number!" % (codes[i], values[0]))
             values[3] = codes
 
         if len(values) >= 5:
@@ -751,7 +774,7 @@ class Extractor(Module):
 
             while total_size < size:
                 (data, dlen) = fdin.read_block()
-                if not data:
+                if dlen < 1:
                     break
                 else:
                     total_size += (dlen - adjust)
@@ -796,8 +819,7 @@ class Extractor(Module):
                 except KeyboardInterrupt as e:
                     raise e
                 except Exception as e:
-                    binwalk.core.common.warning(
-                        "Internal extractor '%s' failed with exception: '%s'" % (str(cmd), str(e)))
+                    binwalk.core.common.warning("Internal extractor '%s' failed with exception: '%s'" % (str(cmd), str(e)))
             elif cmd:
                 # If not in debug mode, create a temporary file to redirect
                 # stdout and stderr to
@@ -809,31 +831,25 @@ class Extractor(Module):
                 while self.UNIQUE_PATH_DELIMITER in cmd:
                     need_unique_path = cmd.split(self.UNIQUE_PATH_DELIMITER)[
                         1].split(self.UNIQUE_PATH_DELIMITER)[0]
-                    unique_path = binwalk.core.common.unique_file_name(
-                        need_unique_path)
-                    cmd = cmd.replace(
-                        self.UNIQUE_PATH_DELIMITER + need_unique_path + self.UNIQUE_PATH_DELIMITER, unique_path)
+                    unique_path = binwalk.core.common.unique_file_name(need_unique_path)
+                    cmd = cmd.replace(self.UNIQUE_PATH_DELIMITER + need_unique_path + self.UNIQUE_PATH_DELIMITER, unique_path)
 
                 # Execute.
                 for command in cmd.split("&&"):
 
                     # Replace all instances of FILE_NAME_PLACEHOLDER in the
                     # command with fname
-                    command = command.strip().replace(
-                        self.FILE_NAME_PLACEHOLDER, fname)
+                    command = command.strip().replace(self.FILE_NAME_PLACEHOLDER, fname)
 
-                    binwalk.core.common.debug(
-                        "subprocess.call(%s, stdout=%s, stderr=%s)" % (command, str(tmp), str(tmp)))
-                    rval = subprocess.call(
-                        shlex.split(command), stdout=tmp, stderr=tmp)
+                    binwalk.core.common.debug("subprocess.call(%s, stdout=%s, stderr=%s)" % (command, str(tmp), str(tmp)))
+                    rval = subprocess.call(shlex.split(command), stdout=tmp, stderr=tmp)
 
                     if rval in codes:
                         retval = True
                     else:
                         retval = False
 
-                    binwalk.core.common.debug(
-                        'External extractor command "%s" completed with return code %d (success: %s)' % (cmd, rval, str(retval)))
+                    binwalk.core.common.debug('External extractor command "%s" completed with return code %d (success: %s)' % (cmd, rval, str(retval)))
 
                     # TODO: Should errors from all commands in a command string be checked? Currently we only support
                     #       specifying one set of error codes, so at the moment, this is not done; it is up to the
@@ -845,8 +861,7 @@ class Extractor(Module):
         except KeyboardInterrupt as e:
             raise e
         except Exception as e:
-            binwalk.core.common.warning(
-                "Extractor.execute failed to run external extractor '%s': %s, '%s' might not be installed correctly" % (str(cmd), str(e), str(cmd)))
+            binwalk.core.common.warning("Extractor.execute failed to run external extractor '%s': %s, '%s' might not be installed correctly" % (str(cmd), str(e), str(cmd)))
             retval = None
 
         if tmp is not None:

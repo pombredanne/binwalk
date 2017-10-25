@@ -1,13 +1,35 @@
 #!/usr/bin/env python
 import os
 import sys
+import glob
 import shutil
 import subprocess
 from distutils.core import setup, Command
 from distutils.dir_util import remove_tree
 
 MODULE_NAME = "binwalk"
+MODULE_VERSION = "2.1.2"
 SCRIPT_NAME = MODULE_NAME
+MODULE_DIRECTORY = os.path.dirname(os.path.realpath(__file__))
+VERSION_FILE = os.path.join(MODULE_DIRECTORY, "src", "binwalk", "core", "version.py")
+
+# Python3 has a built-in DEVNULL; for Python2, we have to open
+# os.devnull to redirect subprocess stderr output to the ether.
+try:
+    from subprocess import DEVNULL
+except ImportError:
+    DEVNULL = open(os.devnull, 'wb')
+
+# If this version of binwalk was checked out from the git repository,
+# include the git commit hash as part of the version number reported
+# by binwalk.
+try:
+    label = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=DEVNULL).decode('utf-8')
+    MODULE_VERSION = "%s-%s" % (MODULE_VERSION, label.strip())
+except KeyboardInterrupt as e:
+    raise e
+except Exception:
+    pass
 
 # Python2/3 compliance
 try:
@@ -15,14 +37,10 @@ try:
 except NameError:
     raw_input = input
 
-# cd into the src directory, no matter where setup.py was invoked from
-# os.chdir(os.path.join(os.path.dirname(os.path.realpath(__file__)), "src"))
-
 
 def which(command):
     # /usr/local/bin is usually the default install path, though it may not be in $PATH
-    usr_local_bin = os.path.sep.join(
-        [os.path.sep, 'usr', 'local', 'bin', command])
+    usr_local_bin = os.path.sep.join([os.path.sep, 'usr', 'local', 'bin', command])
 
     try:
         location = subprocess.Popen(
@@ -102,10 +120,10 @@ class IDAUnInstallCommand(Command):
         binwalk_dst_path = os.path.join(self.idadir, 'python', 'binwalk')
 
         if os.path.exists(binida_dst_path):
-            sys.stdout.write("removing %s\n" % binida_dst_path)
+            sys.stdout.write("removing '%s'\n" % binida_dst_path)
             os.remove(binida_dst_path)
         if os.path.exists(binwalk_dst_path):
-            sys.stdout.write("removing %s\n" % binwalk_dst_path)
+            sys.stdout.write("removing '%s'\n" % binwalk_dst_path)
             shutil.rmtree(binwalk_dst_path)
 
 
@@ -203,20 +221,64 @@ class CleanCommand(Command):
         pass
 
     def run(self):
+        sys.stdout.write("removing '%s'\n" % (VERSION_FILE))
+
         try:
-            remove_tree("build")
+            os.remove(VERSION_FILE)
+        except OSError as e:
+            sys.stderr.write("failed to remove file '%s': %s\n" % (VERSION_FILE, str(e)))
+
+        try:
+            remove_tree(os.path.join(MODULE_DIRECTORY, "build"))
         except KeyboardInterrupt as e:
             raise e
         except Exception:
             pass
 
         try:
-            remove_tree("dist")
+            remove_tree(os.path.join(MODULE_DIRECTORY, "dist"))
         except KeyboardInterrupt as e:
             raise e
         except Exception:
             pass
 
+
+class AutoCompleteCommand(Command):
+    description = "Install bash autocomplete file"
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        options = []
+        autocomplete_file_path = "/etc/bash_completion.d/%s" % MODULE_NAME
+        auto_complete = '''_binwalk()
+{
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    opts="%s"
+
+    if [[ ${cur} == -* ]] ; then
+        COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+        return 0
+    fi
+}
+complete -F _binwalk binwalk'''
+
+        (out, err) = subprocess.Popen(["binwalk", "--help"], stdout=subprocess.PIPE).communicate()
+        for line in out.splitlines():
+            if b'--' in line:
+                long_opt = line.split(b'--')[1].split(b'=')[0].split()[0].strip()
+                options.append('--' + long_opt.decode('utf-8'))
+
+        with open(autocomplete_file_path, "w") as fp:
+            fp.write(auto_complete % ' '.join(options))
 
 class TestCommand(Command):
     description = "Run unit-tests"
@@ -229,28 +291,61 @@ class TestCommand(Command):
         pass
 
     def run(self):
+        # Need the nose module for testing
         import nose
-        nose.main(argv=['--exe','--with-coverage'])
+
+        # cd into the testing directory. Otherwise, the src/binwalk
+        # directory gets imported by nose which a) clutters the src
+        # directory with a bunch of .pyc files and b) will fail anyway
+        # unless a build/install has already been run which creates
+        # the version.py file.
+        testing_directory = os.path.join(MODULE_DIRECTORY, "testing", "tests")
+        os.chdir(testing_directory)
+
+        # Run the tests
+        nose.core.run(argv=['--exe','--with-coverage'])
+
+        sys.stdout.write("\n")
+
+        # Clean up the resulting pyc files in the testing directory
+        for pyc in glob.glob("%s/*.pyc" % testing_directory):
+            sys.stdout.write("removing '%s'\n" % pyc)
+            os.remove(pyc)
+
+        input_vectors_directory = os.path.join(testing_directory, "input-vectors")
+        for extracted_directory in glob.glob("%s/*.extracted" % input_vectors_directory):
+            remove_tree(extracted_directory)
 
 # The data files to install along with the module
 install_data_files = []
 for data_dir in ["magic", "config", "plugins", "modules", "core"]:
     install_data_files.append("%s%s*" % (data_dir, os.path.sep))
 
+# If doing a build or installation, then create a version.py file
+# which defines the current binwalk version. This file is excluded
+# from git in the .gitignore file.
+if 'install' in ' '.join(sys.argv) or 'build' in ' '.join(sys.argv):
+    sys.stdout.write("creating %s\n" % (VERSION_FILE))
+
+    try:
+        with open(VERSION_FILE, "w") as fp:
+            fp.write("# This file has been auto-generated by setup.py\n")
+            fp.write('__version__ = "%s"\n' % MODULE_VERSION)
+    except IOError as e:
+        sys.stderr.write("failed to create file %s: %s\n" % (VERSION_FILE, str(e)))
+        sys.exit(1)
+
 # Install the module, script, and support files
 setup(
     name=MODULE_NAME,
-    version="2.1.2b",
+    version=MODULE_VERSION,
     description="Firmware analysis tool",
     author="Craig Heffner",
-    url="https://github.com/devttys0/%s" %
-    MODULE_NAME,
+    url="https://github.com/devttys0/%s" % MODULE_NAME,
     requires=[],
-    package_dir={
-        "": "src"},
+    package_dir={"": "src"},
     packages=[MODULE_NAME],
-    package_data={
-        MODULE_NAME: install_data_files},
+    package_data={MODULE_NAME: install_data_files},
     scripts=[
         os.path.join(
             "src",
@@ -261,4 +356,5 @@ setup(
         'uninstall': UninstallCommand,
         'idainstall': IDAInstallCommand,
         'idauninstall': IDAUnInstallCommand,
+        'autocomplete' : AutoCompleteCommand,
         'test': TestCommand})
